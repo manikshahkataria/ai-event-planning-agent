@@ -9,6 +9,8 @@ from planner.requirements import (
 )
 
 from planner.event_plan import generate_event_plan
+
+from planner.budget import optimize_budget
 # ==========================================
 # CONFIGURATION
 # ==========================================
@@ -235,6 +237,85 @@ if event_plan:
 
         for note in notes:
             print(f"  • {note}")
+
+        # ==========================================
+    # MILESTONE 3 - BUDGET INTELLIGENCE
+    # ==========================================
+
+    print()
+    print("=" * 50)
+    print("💰 OPTIMIZING EVENT BUDGET")
+    print("=" * 50)
+
+    budget_plan = optimize_budget(
+        client=client,
+        model=MODEL,
+        event_state=event_state,
+        event_plan=event_plan,
+    )
+
+    if budget_plan:
+
+        print()
+        print("=" * 50)
+        print("💰 INTELLIGENT BUDGET PLAN")
+        print("=" * 50)
+
+        print(
+            f"\nStrategy: "
+            f"{budget_plan['budget_strategy']}"
+        )
+
+        print("\nBUDGET ALLOCATION")
+        print("-" * 50)
+
+        for item in budget_plan["allocations"]:
+
+            print(
+                f"\n{item['category']} "
+                f"[{item['priority'].upper()} PRIORITY]"
+            )
+
+            print(
+                f"  Allocation: "
+                f"₹{item['allocated_budget']:,.0f}"
+            )
+
+            print(
+                f"  Why: {item['reason']}"
+            )
+
+        print()
+        print("-" * 50)
+
+        print(
+            f"Total Allocated : "
+            f"₹{budget_plan['total_allocated']:,.0f}"
+        )
+
+        print(
+            f"Remaining Budget: "
+            f"₹{budget_plan['remaining_budget']:,.0f}"
+        )
+
+        tradeoffs = budget_plan.get(
+            "tradeoffs",
+            []
+        )
+
+        if tradeoffs:
+
+            print("\n⚖️ TRADE-OFFS")
+
+            for tradeoff in tradeoffs:
+                print(f"  • {tradeoff}")
+
+    else:
+
+        print(
+            "\n⚠️ Unable to generate "
+            "budget intelligence."
+        )        
 
 else:
 
