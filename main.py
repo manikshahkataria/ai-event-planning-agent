@@ -8,7 +8,7 @@ from planner.requirements import (
     get_missing_fields,
 )
 
-
+from planner.event_plan import generate_event_plan
 # ==========================================
 # CONFIGURATION
 # ==========================================
@@ -29,7 +29,7 @@ client = OpenAI(
 )
 
 
-MODEL = "openrouter/free"
+MODEL = "inclusionai/ling-3.0-flash-vl"
 
 
 # ==========================================
@@ -169,4 +169,75 @@ else:
 
 
 print()
-print("🚀 Ready to generate the event plan.")
+print("=" * 50)
+print("🤖 GENERATING EVENT PLAN")
+print("=" * 50)
+
+
+event_plan = generate_event_plan(
+    client=client,
+    model=MODEL,
+    event_state=event_state,
+)
+
+
+if event_plan:
+
+    print()
+    print("=" * 50)
+    print("🎯 YOUR EVENT PLAN")
+    print("=" * 50)
+
+    print(
+        f"\n{event_plan['event_summary']}"
+    )
+
+    print("\nPLAN")
+    print("-" * 50)
+
+    for item in event_plan["categories"]:
+
+        print(
+            f"\n{item['category']}"
+        )
+
+        print(
+            f"  Recommendation: "
+            f"{item['recommendation']}"
+        )
+
+        print(
+            f"  Estimated Budget: "
+            f"₹{item['estimated_budget']:,.0f}"
+        )
+
+    print()
+    print("-" * 50)
+
+    print(
+        f"Estimated Cost : "
+        f"₹{event_plan['total_estimated_cost']:,.0f}"
+    )
+
+    print(
+        f"Remaining Budget: "
+        f"₹{event_plan['remaining_budget']:,.0f}"
+    )
+
+    notes = event_plan.get(
+        "planning_notes",
+        []
+    )
+
+    if notes:
+
+        print("\nPlanning Notes:")
+
+        for note in notes:
+            print(f"  • {note}")
+
+else:
+
+    print(
+        "\n⚠️ Unable to generate event plan."
+    )

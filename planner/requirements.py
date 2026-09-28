@@ -130,13 +130,15 @@ Update the event state using the new information.
                 },
             },
 
-            # Important for the OpenRouter router:
-            # use providers that support our parameters.
             extra_body={
                 "provider": {
                     "require_parameters": True
                 }
             },
+
+            # Important for the OpenRouter router:
+            # use providers that support our parameters.
+            
         )
 
         raw_response = (
