@@ -1,5 +1,5 @@
 import json
-
+from planner.llm_client import create_reliable_completion
 
 REQUIRED_FIELDS = [
     "event_type",
@@ -106,9 +106,8 @@ Update the event state using the new information.
 
     try:
 
-        response = client.chat.completions.create(
-
-            model=model,
+        response = create_reliable_completion(
+            client=client,
 
             messages=[
                 {
@@ -130,16 +129,14 @@ Update the event state using the new information.
                 },
             },
 
-            extra_body={
-                "provider": {
-                    "require_parameters": True
-                }
-            },
-
-            # Important for the OpenRouter router:
-            # use providers that support our parameters.
-            
         )
+
+        if response is None:
+            print(
+                "\n⚠️ Requirements extraction "
+                "could not reach the AI service."
+            )
+            return current_state
 
         raw_response = (
             response.choices[0].message.content

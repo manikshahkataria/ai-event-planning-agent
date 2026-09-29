@@ -11,6 +11,10 @@ from planner.requirements import (
 from planner.event_plan import generate_event_plan
 
 from planner.budget import optimize_budget
+
+from planner.timeline import generate_timeline
+from planner.validation import validate_requirements
+from planner.strategy import assess_event_strategy
 # ==========================================
 # CONFIGURATION
 # ==========================================
@@ -28,6 +32,7 @@ if not api_key:
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=api_key,
+    max_retries=0,
 )
 
 
@@ -90,6 +95,8 @@ event_state = extract_requirements(
     user_message=user_message,
     current_state=event_state,
 )
+validation_issues = validate_requirements(event_state)
+conversation_context = user_message
 
 
 # ==========================================
@@ -100,12 +107,36 @@ while True:
 
     missing_fields = get_missing_fields(event_state)
 
-    if not missing_fields:
-        break
+    blocking_issues = [
+        issue for issue in validation_issues if issue["blocking"]
+    ]
 
-    field = missing_fields[0]
-
-    question = QUESTIONS[field]
+    contextual_clarification = False
+    if missing_fields:
+        field = missing_fields[0]
+        question = QUESTIONS[field]
+    elif blocking_issues:
+        issue = blocking_issues[0]
+        field = issue["field"]
+        question = issue["question"]
+    else:
+        assessment = assess_event_strategy(
+            client=client,
+            model=MODEL,
+            event_state=event_state,
+            conversation_context=conversation_context,
+        )
+        if assessment is None:
+            print("\nPlanning stopped because event strategy could not be assessed.")
+            raise SystemExit(0)
+        if assessment["status"] == "ready":
+            strategy = assessment["strategy"]
+            break
+        issue = next(issue for issue in assessment["issues"] if issue["blocking"])
+        field = ", ".join(issue["fields"])
+        question = issue["question"]
+        contextual_clarification = True
+        print(f"\n{issue['reason']}")
 
     print(f"\nAI Planner: {question}")
 
@@ -120,9 +151,10 @@ The user answered:
 
 {user_answer}
 
-The answer is specifically related to the field:
+The answer is related to the following field(s):
 {field}
 """
+    conversation_context += "\n" + contextual_message
 
     previous_state = event_state.copy()
 
@@ -132,9 +164,10 @@ The answer is specifically related to the field:
         user_message=contextual_message,
         current_state=event_state,
     )
+    validation_issues = validate_requirements(event_state)
 
     # Prevent endless loop if extraction fails
-    if event_state == previous_state:
+    if event_state == previous_state and not contextual_clarification:
         print(
             "\n⚠️ I couldn't understand that answer."
             " Please try again."
@@ -180,6 +213,7 @@ event_plan = generate_event_plan(
     client=client,
     model=MODEL,
     event_state=event_state,
+    strategy=strategy,
 )
 
 
@@ -242,6 +276,10 @@ if event_plan:
     # MILESTONE 3 - BUDGET INTELLIGENCE
     # ==========================================
 
+        # ==========================================
+    # MILESTONE 3 - BUDGET INTELLIGENCE
+    # ==========================================
+
     print()
     print("=" * 50)
     print("💰 OPTIMIZING EVENT BUDGET")
@@ -252,6 +290,7 @@ if event_plan:
         model=MODEL,
         event_state=event_state,
         event_plan=event_plan,
+        strategy=strategy,
     )
 
     if budget_plan:
@@ -310,12 +349,146 @@ if event_plan:
             for tradeoff in tradeoffs:
                 print(f"  • {tradeoff}")
 
+        # ==========================================
+        # MILESTONE 4 - TASKS & TIMELINE
+        # ==========================================
+
+        print()
+        print("=" * 50)
+        print("📅 GENERATING EXECUTION TIMELINE")
+        print("=" * 50)
+
+        timeline = generate_timeline(
+            client=client,
+            model=MODEL,
+            event_state=event_state,
+            event_plan=event_plan,
+            budget_plan=budget_plan,
+        )
+
+        if timeline:
+
+            print()
+            print("=" * 50)
+            print("📋 EVENT EXECUTION PLAN")
+            print("=" * 50)
+
+            print(
+                f"\n{timeline['timeline_summary']}"
+            )
+
+            print("\nTASKS")
+            print("-" * 50)
+
+            tasks = timeline["tasks"]
+
+            task_lookup = {
+                task["task_id"]: task["task"]
+                for task in tasks
+            }
+
+            for task in tasks:
+
+                print(
+                    f"\nTask {task['task_id']}: "
+                    f"{task['task']}"
+                )
+
+                print(
+                    f"  Category: "
+                    f"{task['category']}"
+                )
+
+                print(
+                    f"  Priority: "
+                    f"{task['priority'].upper()}"
+                )
+
+                print(
+                    f"  Due: {task['due_date']}"
+                )
+
+                dependencies = task["dependencies"]
+
+                if dependencies:
+
+                    dependency_names = [
+                        task_lookup.get(
+                            dependency,
+                            f"Task {dependency}"
+                        )
+                        for dependency in dependencies
+                    ]
+
+                    print(
+                        "  Depends on: "
+                        + ", ".join(dependency_names)
+                    )
+
+                else:
+                    print("  Depends on: None")
+
+                print(
+                    f"  Why: {task['reason']}"
+                )
+
+            # ======================================
+            # CRITICAL TASKS
+            # ======================================
+
+            critical_tasks = timeline.get(
+                "critical_tasks",
+                []
+            )
+
+            if critical_tasks:
+
+                print()
+                print("-" * 50)
+                print("🚨 CRITICAL TASKS")
+
+                for task_id in critical_tasks:
+
+                    task_name = task_lookup.get(
+                        task_id,
+                        f"Task {task_id}"
+                    )
+
+                    print(
+                        f"  • Task {task_id}: "
+                        f"{task_name}"
+                    )
+
+            # ======================================
+            # EXECUTION NOTES
+            # ======================================
+
+            execution_notes = timeline.get(
+                "execution_notes",
+                []
+            )
+
+            if execution_notes:
+
+                print()
+                print("📝 EXECUTION NOTES")
+
+                for note in execution_notes:
+                    print(f"  • {note}")
+
+        else:
+
+            print(
+                "\n⚠️ Unable to generate "
+                "execution timeline."
+            )
+
     else:
 
         print(
             "\n⚠️ Unable to generate "
             "budget intelligence."
-        )        
+        )
 
 else:
 

@@ -1,4 +1,5 @@
 import json
+from planner.llm_client import create_reliable_completion
 
 
 BUDGET_SCHEMA = {
@@ -73,7 +74,8 @@ def optimize_budget(
     client,
     model,
     event_state,
-    event_plan
+    event_plan,
+    strategy=None,
 ):
     """
     Analyze the event plan and create an intelligent
@@ -178,8 +180,18 @@ Explain important trade-offs.
 
     try:
 
-        response = client.chat.completions.create(
-            model=model,
+        if strategy is not None:
+            system_prompt += """
+Respect the supplied strategy's approach, priorities, bundles and omissions.
+Allocate once per event-plan category, using its exact name. A bundle's allocation
+covers all its included services; never budget those services again separately.
+Do not fund omitted services or treat alternative approaches as extra purchases.
+Explain trade-offs without silently dropping an explicit user priority.
+"""
+            user_prompt += "\nEVENT STRATEGY:\n" + json.dumps(strategy, indent=2)
+
+        response = create_reliable_completion(
+            client=client,
 
             messages=[
                 {
@@ -201,12 +213,14 @@ Explain important trade-offs.
                 }
             },
 
-            extra_body={
-                "provider": {
-                    "require_parameters": True
-                }
-            }
         )
+
+        if response is None:
+            print(
+                "\nBudget Intelligence "
+                "could not reach the AI service."
+            )
+            return None
 
         raw_response = (
             response.choices[0].message.content
@@ -231,6 +245,14 @@ Explain important trade-offs.
             "allocations",
             []
         )
+
+        if strategy is not None:
+            selected = {item["category"] for item in strategy["categories"]}
+            planned = {item["category"] for item in event_plan["categories"]}
+            actual = [item["category"] for item in allocations]
+            if planned != selected or set(actual) != selected or len(actual) != len(selected):
+                print("\nBudget categories did not match the selected strategy.")
+                return None
 
         # ----------------------------------
         # SAFETY VALIDATION

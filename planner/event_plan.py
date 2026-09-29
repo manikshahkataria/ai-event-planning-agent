@@ -1,5 +1,5 @@
 import json
-
+from planner.llm_client import create_reliable_completion
 
 EVENT_PLAN_SCHEMA = {
     "type": "object",
@@ -57,7 +57,8 @@ EVENT_PLAN_SCHEMA = {
 def generate_event_plan(
     client,
     model,
-    event_state
+    event_state,
+    strategy=None,
 ):
     """
     Generate a structured event plan using
@@ -106,17 +107,28 @@ Create a high-level event plan.
 
     try:
 
-        response = client.chat.completions.create(
-            model=model,
+        if strategy is not None:
+            system_prompt += """
+Follow the supplied event strategy's approach, priorities, omissions and selected
+categories. Use exactly its category names. Explain bundled services in each
+recommendation; do not add separate categories for services already covered.
+Do not reinstate omitted services or silently remove explicitly requested ones.
+Treat alternatives as alternatives, not additional purchases. Include relevant
+assumptions and trade-offs in planning_notes for downstream execution planning.
+"""
+            user_prompt += "\nEVENT STRATEGY:\n" + json.dumps(strategy, indent=2)
+
+        response = create_reliable_completion(
+            client=client,
 
             messages=[
                 {
                     "role": "system",
-                    "content": system_prompt,
+                    "content": system_prompt
                 },
                 {
                     "role": "user",
-                    "content": user_prompt,
+                    "content": user_prompt
                 },
             ],
 
@@ -128,13 +140,14 @@ Create a high-level event plan.
                     "schema": EVENT_PLAN_SCHEMA,
                 },
             },
-
-            extra_body={
-                "provider": {
-                    "require_parameters": True
-                }
-            },
         )
+
+        if response is None:
+            print(
+                "\n⚠️ Event plan generation "
+                "could not reach the AI service."
+            )
+            return None
 
         raw_response = (
             response.choices[0].message.content
@@ -159,6 +172,13 @@ Create a high-level event plan.
             "categories",
             []
         )
+
+        if strategy is not None:
+            selected = {item["category"] for item in strategy["categories"]}
+            actual = [item["category"] for item in categories]
+            if set(actual) != selected or len(actual) != len(selected):
+                print("\nEvent plan categories did not match the selected strategy.")
+                return None
 
         total_cost = sum(
             item["estimated_budget"]
