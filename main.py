@@ -1,7 +1,4 @@
-import os
-
-from dotenv import load_dotenv
-from openai import OpenAI
+from planner.llm_client import create_llm_client, get_llm_model
 
 from planner.requirements import (
     extract_requirements,
@@ -15,28 +12,13 @@ from planner.budget import optimize_budget
 from planner.timeline import generate_timeline
 from planner.validation import validate_requirements
 from planner.strategy import assess_event_strategy
+from planner.vendors import recommend_vendors
 # ==========================================
 # CONFIGURATION
 # ==========================================
 
-load_dotenv()
-
-api_key = os.getenv("OPENROUTER_API_KEY")
-
-if not api_key:
-    raise ValueError(
-        "OPENROUTER_API_KEY not found in .env"
-    )
-
-
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=api_key,
-    max_retries=0,
-)
-
-
-MODEL = "inclusionai/ling-3.0-flash-vl"
+client = create_llm_client()
+MODEL = get_llm_model(client)
 
 
 # ==========================================
@@ -482,6 +464,31 @@ if event_plan:
                 "\n⚠️ Unable to generate "
                 "execution timeline."
             )
+
+        # Vendor discovery follows the timeline stage, including timeline failure.
+        print("\nREAL VENDOR / PLACE RECOMMENDATIONS")
+        print("Search area: within 10 km of the resolved location.")
+        print("Strategy coverage is planning intent; returned places have not been verified to provide it.")
+        try:
+            vendor_groups = recommend_vendors(event_state["location"], strategy)
+            for group in vendor_groups:
+                print(f"\n{group['category']}")
+                print("Intended strategy coverage: " + (", ".join(group["covers"]) or "Not specified"))
+                if group["unsupported_types"]:
+                    print("Unsupported search types skipped: " + ", ".join(group["unsupported_types"]))
+                if group["status"] == "ok":
+                    print("Places to consider:")
+                    for place in group["places"]:
+                        print()
+                        for field, label in (("name", "Name"), ("address", "Address"),
+                                             ("website", "Website"), ("phone", "Phone"),
+                                             ("source", "Source")):
+                            if place.get(field):
+                                print(f"  {label}: {place[field]}")
+                if group["message"]:
+                    print(group["message"])
+        except Exception:
+            print("Vendor discovery is unavailable. Your event plan and budget are unchanged.")
 
     else:
 

@@ -29,6 +29,7 @@ READY = {
         "categories": [{
             "category": "Dining reservation", "covers": ["food", "venue"],
             "reason": "One reservation covers the required services.",
+            "vendor_types": ["restaurant"],
         }],
         "omissions": [{"service": "Professional photography", "reason": "Not requested."}],
         "alternatives": [{"approach": "Private venue", "tradeoff": "More separate services."}],
@@ -103,6 +104,7 @@ class StrategyTests(unittest.TestCase):
         ready["strategy"]["categories"].append({
             "category": "Photography", "covers": ["professional photographer"],
             "reason": "Explicitly requested.",
+            "vendor_types": [],
         })
         result, args = self.assess(ready, {**STATE, "preferences": ["professional photographer"]})
         self.assertIn("Explicitly requested services must be covered", args["messages"][0]["content"])
@@ -140,6 +142,19 @@ class StrategyTests(unittest.TestCase):
         with patch("planner.strategy.create_reliable_completion", return_value=None) as complete:
             self.assertIsNone(assess_event_strategy(None, None, STATE))
         complete.assert_called_once()
+
+    def test_vendor_type_vocabulary(self):
+        for types in (["restaurant"], ["cafe", "bar", "pub"], []):
+            ready = deepcopy(READY)
+            ready["strategy"]["categories"][0]["vendor_types"] = types
+            self.assertEqual(self.assess(ready)[0], ready)
+        for types in (["photographer"], ["catering.restaurant"], ["Business Name"], "restaurant"):
+            ready = deepcopy(READY)
+            ready["strategy"]["categories"][0]["vendor_types"] = types
+            self.assertIsNone(self.assess(ready)[0])
+        ready = deepcopy(READY)
+        del ready["strategy"]["categories"][0]["vendor_types"]
+        self.assertIsNone(self.assess(ready)[0])
 
     def run_gate(self, assessments, initial=None, corrections=()):
         # Execute the actual collection loop plus sentinel downstream calls only.

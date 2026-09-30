@@ -49,8 +49,14 @@ STRATEGY_SCHEMA = {
                                 "items": {"type": "string", "minLength": 1},
                             },
                             "reason": {"type": "string", "minLength": 1},
+                            "vendor_types": {
+                                "type": "array",
+                                "items": {"type": "string", "enum": [
+                                    "restaurant", "cafe", "bar", "pub",
+                                ]},
+                            },
                         },
-                        "required": ["category", "covers", "reason"],
+                        "required": ["category", "covers", "reason", "vendor_types"],
                         "additionalProperties": False,
                     },
                 },
@@ -151,6 +157,16 @@ ask if the change is unclear. Do not invent user preferences.
 No vendor, restaurant, hotel or address existence verification, maps, live prices
 or availability checking. Describe generic approaches, not specific businesses.
 Bundled inclusions are proposals, not verified offers; state relevant assumptions.
+
+For each selected category, vendor_types identifies external provider types
+required by the SELECTED strategy. Only restaurant, cafe, bar and pub are
+supported. Use [] when no external search is required or no supported type
+accurately represents the need. Do not force an unrelated type for unsupported
+services. Do not derive searches simply from covers: a restaurant bundle covering
+food, venue and music needs only the restaurant search. Do not include vendors
+from omissions or unselected alternatives. Include no business names or Geoapify
+category codes in vendor_types. Multiple types are acceptable alternatives for
+that selected category. DIY and already-provided resources need no vendor search.
 
 Return needs_clarification with at least one blocking issue and strategy=null
 when material conflicts or ambiguity remain. Each blocking issue needs affected
