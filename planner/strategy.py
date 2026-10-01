@@ -100,7 +100,8 @@ STRATEGY_SCHEMA = {
 }
 
 
-def assess_event_strategy(client, model, event_state, conversation_context=""):
+def assess_event_strategy(client, model, event_state, conversation_context="",
+                          previous_strategy=None, changes=None):
     """Return a validated assessment, or None on service/response failure."""
     # Check the small schema subset used above locally as well as at the provider.
     def check(value, schema):
@@ -175,6 +176,11 @@ no blocking issues and a complete strategy. Nonblocking concerns may be advisory
 Use unique category names, describe each bundle in covers, avoid overlapping
 service allocations, and provide at most two brief alternatives. Assumptions
 must not conceal unresolved material conflicts. Keep the response concise.
+
+When previous_strategy and requirement_changes are supplied, reassess the updated
+requirements while preserving prior decisions that still fit. The current
+requirements replace superseded values/preferences; historical context must not
+restore removed preferences. Explain necessary changes, not gratuitous redesigns.
 """
 
     try:
@@ -196,6 +202,8 @@ must not conceal unresolved material conflicts. Keep the response concise.
                     "event_requirements": event_state,
                     "conversation_context": conversation_context,
                     "budget_per_guest": budget_per_guest,
+                    "previous_strategy": previous_strategy,
+                    "requirement_changes": changes,
                 }, indent=2)},
             ],
             response_format={

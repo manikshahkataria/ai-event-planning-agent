@@ -1,17 +1,17 @@
 """Offline vendor integration tests; all HTTP access is mocked."""
 
-import ast
 from copy import deepcopy
 from io import BytesIO
 import json
 import os
-from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 
 from planner import vendors
+from planner.replanning import generate_revision
+from planner import replanning
 
 
 def body(value):
@@ -139,29 +139,122 @@ class VendorTests(unittest.TestCase):
         self.http.side_effect = [body(GEO), URLError("offline")]
         self.assertEqual(vendors.search_vendors("Delhi", ["catering.restaurant"]), [])
 
+    def test_cache_reuses_facts_and_regroups_changed_labels(self):
+        cache = {}
+        strategy = {"categories": [category(["restaurant"])]}
+        self.http.side_effect = [body(GEO), body({"features": [feature()]})]
+        original = vendors.recommend_vendors("Delhi", strategy, cache=cache)
+        strategy["categories"][0].update(category="New label", covers=["food", "space"])
+        current = vendors.recommend_vendors("Delhi", strategy, cache=cache)
+        self.assertEqual(self.http.call_count, 2)
+        self.assertEqual(current[0]["search_action"], "reused")
+        self.assertEqual(current[0]["category"], "New label")
+        self.assertEqual(current[0]["covers"], ["food", "space"])
+        self.assertEqual(current[0]["places"], original[0]["places"])
+        current[0]["places"][0]["name"] = "Edited display"
+        again = vendors.recommend_vendors("Delhi", strategy, cache=cache)
+        self.assertEqual(again[0]["places"][0]["name"], "Fixture Restaurant")
+
+    def test_cache_key_location_type_radius_and_limit(self):
+        cache = {}
+        strategy = {"categories": [category(["restaurant"])]}
+        self.http.side_effect = [body(GEO), body({"features": []}), body(GEO), body({"features": []}),
+                                 body({"features": []}), body({"features": []}), body({"features": []})]
+        vendors.recommend_vendors("Delhi", strategy, cache=cache)
+        vendors.recommend_vendors("Noida", strategy, cache=cache)
+        self.assertEqual(self.http.call_count, 4)
+        strategy["categories"][0]["vendor_types"] = ["cafe"]
+        vendors.recommend_vendors("Noida", strategy, cache=cache)
+        self.assertEqual(self.http.call_count, 5)  # Reuse Noida coordinates.
+        vendors.recommend_vendors("Noida", strategy, cache=cache, radius_m=5000)
+        self.assertEqual(self.http.call_count, 6)
+        vendors.recommend_vendors("Noida", strategy, cache=cache, radius_m=5000, limit_per_category=3)
+        self.assertEqual(self.http.call_count, 7)
+        self.assertTrue(all(key[0] == "Geoapify" for key in cache["searches"]))
+
+    def test_cached_empty_and_failed_searches_do_not_repeat(self):
+        for places in (body({"features": []}), URLError("offline")):
+            cache = {}
+            strategy = {"categories": [category(["restaurant"])]}
+            self.http.reset_mock()
+            self.http.side_effect = [body(GEO), places]
+            first = vendors.recommend_vendors("Delhi", strategy, cache=cache)
+            second = vendors.recommend_vendors("Delhi", strategy, cache=cache)
+            self.assertEqual(first[0]["status"], second[0]["status"])
+            self.assertEqual(second[0]["search_action"], "reused")
+            self.assertEqual(self.http.call_count, 2)
+
+    def test_cache_reuses_existing_type_and_searches_only_added_type(self):
+        cache = {}
+        strategy = {"categories": [category(["restaurant"])]}
+        self.http.side_effect = [body(GEO), body({"features": [feature()]}), body({"features": []})]
+        vendors.recommend_vendors("Delhi", strategy, cache=cache)
+        strategy["categories"].append(category(["cafe"], "Cafe alternative"))
+        groups = vendors.recommend_vendors("Delhi", strategy, cache=cache)
+        self.assertEqual(self.http.call_count, 3)
+        self.assertEqual([g["search_action"] for g in groups], ["reused", "searched"])
+
+    def test_replanning_reuses_vendor_facts_for_guest_budget_date_and_noop(self):
+        requirements = {"event_type": "party", "location": "Delhi", "date": "2026-11-15",
+                        "guest_count": 20, "budget": 25000, "preferences": []}
+        strategy = {"categories": [category(["restaurant"])]}
+        self.http.side_effect = [body(GEO), body({"features": [feature()]})]
+        with patch.object(replanning, "assess_event_strategy", return_value={"status": "ready", "issues": [], "strategy": strategy}) as assess, \
+                patch.object(replanning, "generate_event_plan", return_value={"event_summary": "Plan"}) as plan, \
+                patch.object(replanning, "optimize_budget", return_value={"budget_strategy": "Budget"}) as budget, \
+                patch.object(replanning, "generate_timeline", return_value={"tasks": []}) as timeline:
+            session = generate_revision(None, None, requirements, strategy)
+            for field, value in (("guest_count", 35), ("budget", 20000), ("date", "2026-12-01")):
+                before = deepcopy(session)
+                proposal = {"updates": [{"field": field, "value": value, "source": str(value)}],
+                            "preference_changes": [], "issues": []}
+                result = replanning.replan_event(None, None, session, proposal)
+                self.assertEqual(session, before)
+                self.assertEqual(result["status"], "ready")
+                session = result["session"]
+                self.assertEqual(session["vendor_groups"][0]["search_action"], "reused")
+                self.assertEqual(self.http.call_count, 2)
+            for mock in (assess, plan, budget, timeline):
+                mock.reset_mock()
+            self.assertEqual(replanning.replan_event(None, None, session, proposal)["status"], "noop")
+            for mock in (assess, plan, budget, timeline):
+                mock.assert_not_called()
+            self.assertEqual(self.http.call_count, 2)
+
+    def test_location_refresh_failure_never_returns_old_city_facts(self):
+        cache = {}
+        strategy = {"categories": [category(["restaurant"])]}
+        self.http.side_effect = [body(GEO), body({"features": [feature()]}), URLError("offline")]
+        old = vendors.recommend_vendors("Delhi", strategy, cache=cache)
+        new = vendors.recommend_vendors("Noida", strategy, cache=cache)
+        self.assertTrue(old[0]["places"])
+        self.assertEqual(new[0]["status"], "unavailable")
+        self.assertEqual(new[0]["places"], [])
+        self.assertEqual(self.http.call_count, 3)
+
     def test_main_invocation_after_timeline_and_failure_isolation(self):
-        # Execute only the existing post-plan branch with all stages stubbed.
-        tree = ast.parse((Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8"))
-        branch = next(n for n in tree.body if isinstance(n, ast.If) and isinstance(n.test, ast.Name) and n.test.id == "event_plan")
-        code = compile(ast.Module(body=[branch], type_ignores=[]), "<post-plan>", "exec")
+        # main delegates the same stage ordering to the revision builder.
+        requirements = {"event_type": "party", "location": "Delhi", "date": "2026-11-15",
+                        "guest_count": 20, "budget": 100, "preferences": []}
+        strategy = {"categories": [category(["restaurant"])]}
         plan = {"event_summary": "Fixture", "categories": [], "total_estimated_cost": 0, "remaining_budget": 100}
         budget = {"budget_strategy": "Fixture", "allocations": [], "total_allocated": 0, "remaining_budget": 100}
         for timeline in (None, {"timeline_summary": "Fixture", "tasks": []}):
             order = []
-            discovery = Mock(side_effect=lambda *a: order.append("vendors") or [])
-            scope = {"event_plan": plan, "event_state": {"location": "Delhi"}, "strategy": {}, "client": None, "MODEL": None,
-                     "optimize_budget": Mock(return_value=budget),
-                     "generate_timeline": Mock(side_effect=lambda **kw: order.append("timeline") or timeline),
-                     "recommend_vendors": discovery}
-            exec(code, scope)
-            self.assertEqual(order, ["timeline", "vendors"])
-            scope["recommend_vendors"] = Mock(side_effect=RuntimeError("Provider failed"))
-            exec(code, scope)  # Must not raise or mutate planning output.
-            self.assertEqual(scope["event_plan"], plan)
-            scope["optimize_budget"].return_value = None
-            scope["recommend_vendors"].reset_mock()
-            exec(code, scope)
-            scope["recommend_vendors"].assert_not_called()
+            with patch("planner.replanning.generate_event_plan", return_value=plan), \
+                    patch("planner.replanning.optimize_budget", return_value=budget) as allocate, \
+                    patch("planner.replanning.generate_timeline", side_effect=lambda **kw: order.append("timeline") or timeline), \
+                    patch("planner.replanning.recommend_vendors", side_effect=lambda *a, **kw: order.append("vendors") or []) as discovery:
+                session = generate_revision(None, None, requirements, strategy)
+                self.assertEqual(order, ["timeline", "vendors"])
+                discovery.side_effect = RuntimeError("Provider failed")
+                session = generate_revision(None, None, requirements, strategy)
+                self.assertEqual(session["event_plan"], plan)
+                self.assertEqual(session["component_statuses"]["vendors"], "unavailable")
+                allocate.return_value = None
+                discovery.reset_mock()
+                self.assertIsNone(generate_revision(None, None, requirements, strategy))
+                discovery.assert_not_called()
 
 
 if __name__ == "__main__":

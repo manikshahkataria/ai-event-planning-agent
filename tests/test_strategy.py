@@ -1,18 +1,15 @@
 """Offline checks: no application startup or real completion requests."""
 
-import ast
 from copy import deepcopy
 import json
-from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from planner.budget import optimize_budget
 from planner.event_plan import generate_event_plan
-from planner.requirements import get_missing_fields
+import main
 from planner.strategy import assess_event_strategy
-from planner.validation import validate_requirements
 
 
 STATE = {
@@ -157,28 +154,18 @@ class StrategyTests(unittest.TestCase):
         self.assertIsNone(self.assess(ready)[0])
 
     def run_gate(self, assessments, initial=None, corrections=()):
-        # Execute the actual collection loop plus sentinel downstream calls only.
-        # Main's imports, client initialization, input startup and rendering never run.
-        source = ast.parse((Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8"))
-        loop = next(node for node in source.body if isinstance(node, ast.While))
-        questions = next(node.value for node in source.body if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "QUESTIONS" for t in node.targets))
+        # Exercise the callable gate without starting the application or a client.
         state = deepcopy(STATE if initial is None else initial)
-        extraction = Mock(side_effect=corrections)
         downstream = Mock()
-        scope = {
-            "event_state": state, "validation_issues": validate_requirements(state),
-            "get_missing_fields": get_missing_fields, "validate_requirements": validate_requirements,
-            "QUESTIONS": ast.literal_eval(questions), "client": None, "MODEL": None,
-            "conversation_context": "Initial description", "assess_event_strategy": assess_event_strategy,
-            "extract_requirements": extraction, "input": Mock(return_value="correction"),
-            "downstream": downstream,
-        }
-        body = [loop] + ast.parse("downstream('plan'); downstream('budget'); downstream('timeline')").body
-        with patch("planner.strategy.create_reliable_completion", side_effect=assessments) as complete:
-            try:
-                exec(compile(ast.Module(body=body, type_ignores=[]), "<strategy-gate>", "exec"), scope)
-            except SystemExit as error:
-                self.assertEqual(error.code, 0)
+        scope = {}
+        with patch("planner.strategy.create_reliable_completion", side_effect=assessments) as complete, \
+                patch("main.extract_requirements", side_effect=corrections) as extraction, \
+                patch("builtins.input", return_value="correction"):
+            collected = main.collect_requirements(None, None, state, "Initial description")
+        if collected is not None:
+            scope["event_state"], scope["strategy"], scope["conversation_context"] = collected
+            for stage in ("plan", "budget", "timeline"):
+                downstream(stage)
         return scope, complete, extraction, downstream
 
     def test_gate_blocks_on_malformed_or_unavailable(self):

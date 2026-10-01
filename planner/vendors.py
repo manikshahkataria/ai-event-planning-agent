@@ -1,6 +1,7 @@
 """Geoapify-backed place discovery; no LLM or inferred business attributes."""
 
 import json
+from copy import deepcopy
 import math
 import os
 from pathlib import Path
@@ -150,7 +151,8 @@ def _normalize_places(features):
             "message": "No places returned within the search radius."}
 
 
-def recommend_vendors(location, strategy, limit_per_category=5):
+def recommend_vendors(location, strategy, limit_per_category=5, *, cache=None,
+                      radius_m=10000):
     """Return one status/result group per selected strategy category.
 
     Search only explicit supported vendor_types. Geocode once and reuse identical
@@ -158,12 +160,15 @@ def recommend_vendors(location, strategy, limit_per_category=5):
     Empty vendor_types means no supported search was requested; it does not prove
     that the event needs no external service. Existing public search_vendors is
     unchanged. All provider failures leave other groups/results intact.
+    An optional session-owned cache reuses facts across revisions. Failed searches
+    remain unavailable until the cache is cleared or the search inputs change.
     """
     categories = strategy.get("categories") if isinstance(strategy, dict) else None
     if not isinstance(categories, list):
         return [{"category": "Vendor search", "covers": [], "vendor_types": [],
                  "unsupported_types": [], "status": "unavailable", "places": [],
-                 "message": "The selected strategy is unavailable or malformed."}]
+                 "message": "The selected strategy is unavailable or malformed.",
+                 "search_action": "not_searched"}]
     groups = []
     searches = []
     for category in categories:
@@ -176,6 +181,7 @@ def recommend_vendors(location, strategy, limit_per_category=5):
             "covers": [item for item in covers if _text(item)] if isinstance(covers, list) else [],
             "vendor_types": types if isinstance(types, list) else [],
             "unsupported_types": [], "status": "not_required", "places": [],
+            "search_action": "not_searched",
             "message": "No supported external place search requested for this category.",
         }
         groups.append(group)
@@ -194,28 +200,49 @@ def recommend_vendors(location, strategy, limit_per_category=5):
         return groups
 
     try:
-        if not _text(location) or type(limit_per_category) is not int or not 1 <= limit_per_category <= 500:
+        if (not _text(location) or type(limit_per_category) is not int or not 1 <= limit_per_category <= 500
+                or type(radius_m) not in (int, float) or radius_m <= 0
+                or (type(radius_m) is float and not math.isfinite(radius_m))):
+            return groups
+        cache = {} if cache is None else cache
+        saved_searches = cache.setdefault("searches", {})
+        saved_locations = cache.setdefault("locations", {})
+        location_key = ("Geoapify", location.strip())
+        pending = []
+        for group, mapped in searches:
+            search_key = (*location_key, mapped, radius_m, limit_per_category)
+            if search_key in saved_searches:
+                group.update(deepcopy(saved_searches[search_key]))
+                group["search_action"] = "reused"
+            else:
+                pending.append((group, mapped, search_key))
+        if not pending:
             return groups
         load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
         api_key = os.getenv("GEOAPIFY_API_KEY", "").strip()
         if not api_key:
-            for group, _ in searches:
+            for group, _, _ in pending:
                 group["message"] = "Vendor discovery is unavailable: API key is not configured."
             return groups
-        coordinates = _geocode_location(location.strip(), api_key)
+        if location_key not in saved_locations:
+            saved_locations[location_key] = _geocode_location(location.strip(), api_key)
+        coordinates = saved_locations[location_key]
         if coordinates is None:
-            for group, _ in searches:
+            for group, _, search_key in pending:
                 group["message"] = "Vendor discovery could not resolve the location."
+                saved_searches[search_key] = {key: deepcopy(group[key]) for key in ("status", "places", "message")}
             return groups
-        results_by_search = {}
-        for group, mapped in searches:
-            if mapped not in results_by_search:
+        for group, mapped, search_key in pending:
+            if search_key not in saved_searches:
                 try:
-                    features = _search_places(*coordinates, mapped, limit_per_category, 10000, api_key)
-                    results_by_search[mapped] = _normalize_places(features)
+                    features = _search_places(*coordinates, mapped, limit_per_category, radius_m, api_key)
+                    saved_searches[search_key] = _normalize_places(features)
                 except Exception:
-                    results_by_search[mapped] = _normalize_places(None)
-            group.update(results_by_search[mapped])
+                    saved_searches[search_key] = _normalize_places(None)
+                group["search_action"] = "searched"
+            else:
+                group["search_action"] = "reused"
+            group.update(deepcopy(saved_searches[search_key]))
         return groups
     except Exception:
         # No exception text: it may contain a URL with credentials.

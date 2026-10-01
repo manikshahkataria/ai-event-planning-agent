@@ -18,8 +18,10 @@ MONTHS = {
 MONTHS.update({name[:3]: number for name, number in list(MONTHS.items())})
 
 
-def _date_problem(value):
-    """Accept explicit English dates, ISO dates, and unambiguous numeric dates."""
+def parse_event_date(value):
+    """Parse an explicit, unambiguous date without guessing or correcting it."""
+    if not isinstance(value, str):
+        raise ValueError("The date needs an explicit day, month, and four-digit year.")
     value = value.strip()
     iso = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", value)
     named = re.fullmatch(r"(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})", value)
@@ -30,13 +32,13 @@ def _date_problem(value):
 
     try:
         if iso:
-            date(*map(int, iso.groups()))
+            return date(*map(int, iso.groups()))
         elif named:
             day, month, year = named.groups()
-            date(int(year), MONTHS[month.lower()], int(day))
+            return date(int(year), MONTHS[month.lower()], int(day))
         elif month_first:
             month, day, year = month_first.groups()
-            date(int(year), MONTHS[month.lower()], int(day))
+            return date(int(year), MONTHS[month.lower()], int(day))
         elif numeric:
             first, _, second, year = numeric.groups()
             first, second, year = int(first), int(second), int(year)
@@ -46,14 +48,22 @@ def _date_problem(value):
                     possibilities.add(date(year, month, day))
                 except ValueError:
                     pass
-            if len(possibilities) > 1:
-                return "The numeric date is ambiguous between day/month and month/day."
-            if not possibilities:
-                return "The date does not exist in the calendar."
-        else:
-            return "The date needs an explicit day, month, and four-digit year."
     except (ValueError, KeyError):
-        return "The date does not exist in the calendar."
+        raise ValueError("The date does not exist in the calendar.") from None
+    if numeric:
+        if len(possibilities) > 1:
+            raise ValueError("The numeric date is ambiguous between day/month and month/day.")
+        if not possibilities:
+            raise ValueError("The date does not exist in the calendar.")
+        return possibilities.pop()
+    raise ValueError("The date needs an explicit day, month, and four-digit year.")
+
+
+def _date_problem(value):
+    try:
+        parse_event_date(value)
+    except ValueError as error:
+        return str(error)
     return None
 
 
