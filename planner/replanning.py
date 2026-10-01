@@ -120,7 +120,16 @@ def _call(function, **kwargs):
         return None
 
 
-def generate_revision(client, model, requirements, strategy, previous=None):
+def notify_progress(callback, stage):
+    """Report a public stage only; presentation failures cannot fail planning."""
+    if callback is not None:
+        try:
+            callback(stage)
+        except Exception:
+            pass
+
+
+def generate_revision(client, model, requirements, strategy, previous=None, progress=None):
     """Generate a detached revision; optional failures never resurrect old output."""
     if validate_requirements(requirements) or not isinstance(strategy, dict) or not strategy:
         return None
@@ -129,20 +138,24 @@ def generate_revision(client, model, requirements, strategy, previous=None):
                "event_plan": None, "budget_plan": None, "timeline": None,
                "vendor_groups": [], "vendor_cache": deepcopy(previous.get("vendor_cache", {})) if previous else {},
                "component_statuses": {"strategy": "ready"}}
+    notify_progress(progress, "event_plan")
     session["event_plan"] = _call(generate_event_plan, client=client, model=model,
                                   event_state=requirements, strategy=strategy)
     if not session["event_plan"]:
         return None
+    notify_progress(progress, "budget")
     session["budget_plan"] = _call(optimize_budget, client=client, model=model,
         event_state=requirements, event_plan=session["event_plan"], strategy=strategy)
     if not session["budget_plan"]:
         return None
     session["component_statuses"].update(event_plan="ready", budget_plan="ready")
+    notify_progress(progress, "timeline")
     session["timeline"] = _call(generate_timeline, client=client, model=model,
         event_state=requirements, event_plan=session["event_plan"], budget_plan=session["budget_plan"])
     session["component_statuses"]["timeline"] = "ready" if session["timeline"] else "unavailable"
     try:
         # The cache belongs to the detached session and may be populated in place.
+        notify_progress(progress, "vendors")
         session["vendor_groups"] = recommend_vendors(requirements["location"], deepcopy(strategy),
                                                      cache=session["vendor_cache"])
         if (not isinstance(session["vendor_groups"], list)
@@ -159,8 +172,9 @@ def generate_revision(client, model, requirements, strategy, previous=None):
     return session
 
 
-def replan_event(client, model, accepted, patch, conversation_context=""):
+def replan_event(client, model, accepted, patch, conversation_context="", progress=None):
     """Return an outcome; the caller publishes result['session'] only on ready."""
+    notify_progress(progress, "validation")
     draft = apply_change_patch(accepted["requirements"], patch)
     result = {"status": "needs_clarification", "draft": draft, "session": None,
               "changes": {}, "impact": {}, "strategy_changes": {}}
@@ -175,6 +189,7 @@ def replan_event(client, model, accepted, patch, conversation_context=""):
     for field in FIELDS:
         if field not in changes:
             draft["requirements"][field] = deepcopy(accepted["requirements"][field])
+    notify_progress(progress, "strategy")
     assessment = _call(assess_event_strategy, client=client, model=model,
         event_state=draft["requirements"], conversation_context=conversation_context,
         previous_strategy=accepted["strategy"], changes=changes)
@@ -185,7 +200,8 @@ def replan_event(client, model, accepted, patch, conversation_context=""):
         draft["issues"] = assessment["issues"]
         return result
     result["strategy_changes"] = compare_strategy(accepted["strategy"], assessment["strategy"])
-    result["session"] = generate_revision(client, model, draft["requirements"], assessment["strategy"], accepted)
+    result["session"] = generate_revision(client, model, draft["requirements"], assessment["strategy"], accepted,
+                                          progress=progress)
     result["status"] = "ready" if result["session"] else "failed"
     return result
 

@@ -237,7 +237,7 @@ class ReplanningTests(unittest.TestCase):
 
     def test_repeated_cli_revisions_use_latest_accepted_state(self):
         with patch("builtins.input", side_effect=["35 guests", "budget 20000", "done"]), \
-                patch("main.extract_requirement_changes", side_effect=[change(guest_count=35), change(budget=20000)]) as extract, \
+                patch("planner.controller.extract_requirement_changes", side_effect=[change(guest_count=35), change(budget=20000)]) as extract, \
                 patch("main.display_session") as display:
             final = main.handle_changes(None, None, self.session)
         self.assertEqual(final["revision"], 3)
@@ -250,7 +250,7 @@ class ReplanningTests(unittest.TestCase):
     def test_mixed_patch_clarification_keeps_all_changes_pending(self):
         proposals = [change(guest_count=35, date="41 November"), change(guest_count=35, date="2026-12-01")]
         with patch("builtins.input", side_effect=["35 guests and 41 November", "2026-12-01", "done"]), \
-                patch("main.extract_requirement_changes", side_effect=proposals) as extract, \
+                patch("planner.controller.extract_requirement_changes", side_effect=proposals) as extract, \
                 patch("main.display_session"):
             final = main.handle_changes(None, None, self.session)
         self.assertEqual(final["revision"], 2)
@@ -265,10 +265,10 @@ class ReplanningTests(unittest.TestCase):
     def test_cli_cancel_exit_and_interpretation_failure_preserve_session(self):
         for answer in ("cancel", "quit", "exit", "done"):
             with patch("builtins.input", side_effect=["bad date", answer, "done"]), \
-                    patch("main.extract_requirement_changes", return_value=change(date="41 November")):
+                    patch("planner.controller.extract_requirement_changes", return_value=change(date="41 November")):
                 self.assertIs(main.handle_changes(None, None, self.session), self.session)
         with patch("builtins.input", side_effect=["update", "done"]), \
-                patch("main.extract_requirement_changes", return_value=None):
+                patch("planner.controller.extract_requirement_changes", return_value=None):
             self.assertIs(main.handle_changes(None, None, self.session), self.session)
         self.assertEqual(self.session, self.before)
         for mock in self.stages.values():
@@ -287,9 +287,9 @@ class ReplanningTests(unittest.TestCase):
         manager.__exit__ = Mock(return_value=False)
         with patch("main.create_llm_client", return_value=manager), \
                 patch("main.get_llm_model", return_value="offline-model"), \
-                patch("main.extract_requirements", return_value=deepcopy(REQUIREMENTS)), \
-                patch("main.assess_event_strategy", return_value=deepcopy(READY)), \
-                patch("main.extract_requirement_changes", return_value=change(guest_count=35)), \
+                patch("planner.controller.extract_requirements_result", return_value={"status": "success", "requirements": deepcopy(REQUIREMENTS), "error": None}), \
+                patch("planner.controller.assess_event_strategy", return_value=deepcopy(READY)), \
+                patch("planner.controller.extract_requirement_changes", return_value=change(guest_count=35)), \
                 patch("builtins.input", side_effect=["initial event", "35 guests", "done"]), \
                 patch("main.display_session") as display:
             main.main()

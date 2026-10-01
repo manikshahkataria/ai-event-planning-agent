@@ -1,15 +1,7 @@
 """Synchronous event-planning CLI with transactional in-memory revisions."""
 
-from copy import deepcopy
-
 from planner.llm_client import create_llm_client, get_llm_model
-from planner.requirements import extract_requirements, extract_requirement_changes, get_missing_fields
-from planner.validation import validate_requirements
-from planner.strategy import assess_event_strategy
-from planner.replanning import generate_revision, replan_event, build_change_summary
-
-
-QUESTIONS = {'event_type': 'What type of event are you planning?', 'location': 'Where would you like to organize the event?', 'date': 'What date are you planning the event for?', 'guest_count': 'Approximately how many guests are you expecting?', 'budget': 'What is your total budget for the event?'}
+from planner import controller
 
 
 def display_requirements(event_state):
@@ -153,80 +145,51 @@ def _exit_requested(message):
     return message.strip().lower() in {"exit", "quit", "done"}
 
 
-def collect_requirements(client, model, event_state, conversation_context):
-    """Initial collection gate; returns validated requirements and ready strategy."""
-    while True:
-        missing_fields = get_missing_fields(event_state)
-        blocking_issues = [issue for issue in validate_requirements(event_state) if issue["blocking"]]
-        contextual_clarification = False
-        if missing_fields:
-            field = missing_fields[0]
-            question = QUESTIONS[field]
-        elif blocking_issues:
-            issue = blocking_issues[0]
-            field, question = issue["field"], issue["question"]
+def resolve_clarifications(client, model, workflow):
+    """CLI input/output only; the controller chooses and processes questions."""
+    while workflow["phase"] == "NEEDS_CLARIFICATION":
+        question = workflow["pending"]["question"]
+        changing = workflow["pending"]["kind"] == "change"
+        if workflow["notice"]:
+            print(workflow["notice"])
+        if changing:
+            print(f"\nUpdate pending: {question['reason']}")
+            print(question["question"])
         else:
-            assessment = assess_event_strategy(client=client, model=model, event_state=event_state,
-                                               conversation_context=conversation_context)
-            if assessment is None:
-                print("\nPlanning stopped because event strategy could not be assessed.")
-                return None
-            if assessment["status"] == "ready":
-                return event_state, assessment["strategy"], conversation_context
-            issue = next(issue for issue in assessment["issues"] if issue["blocking"])
-            field, question = ", ".join(issue["fields"]), issue["question"]
-            contextual_clarification = True
-            print(issue["reason"])
-        print(f"\nAI Planner: {question}")
-        user_answer = input("You: ")
-        if _exit_requested(user_answer):
-            return None
-        contextual_message = f"The planner asked: {question}\nThe user answered: {user_answer}\nRelated fields: {field}"
-        conversation_context += "\n" + contextual_message
-        previous_state = event_state
-        event_state = extract_requirements(client=client, model=model, user_message=contextual_message,
-                                           current_state=event_state)
-        if event_state == previous_state and not contextual_clarification:
-            print("I couldn't understand that answer. Please try again.")
+            if question["kind"] == "strategy":
+                print(question["reason"])
+            print(f"\nAI Planner: {question['question']}")
+        answer = input("You (or cancel to discard this update): " if changing else "You: ")
+        if _exit_requested(answer):
+            return workflow, True
+        if changing and answer.strip().lower() == "cancel":
+            print("Proposed update discarded. Accepted event unchanged.")
+            return controller.cancel_pending(workflow), False
+        workflow = controller.submit_clarification(client, model, workflow, answer)
+    return workflow, False
 
 
 def handle_changes(client, model, session):
-    """Keep accepted state separate from every pending change and clarification."""
+    """Render and submit CLI actions; all planning decisions live in controller."""
+    workflow = controller.new_workflow(session)
     while True:
         request = input("\nDescribe a change, or enter done to finish:\n> ").strip()
         if _exit_requested(request):
             return session
         if not request:
             continue
-        context = ""
-        while True:
-            patch = extract_requirement_changes(client, model, deepcopy(session["requirements"]), request, context)
-            if patch is None:
-                print("Change interpretation failed. The accepted revision is unchanged.")
-                break
-            result = replan_event(client, model, session, patch,
-                                  conversation_context=request + "\n" + context)
-            if result["status"] == "needs_clarification":
-                issue = next(issue for issue in result["draft"]["issues"] if issue["blocking"])
-                print(f"\nUpdate pending: {issue['reason']}")
-                print(issue["question"])
-                answer = input("You (or cancel to discard this update): ")
-                if _exit_requested(answer):
-                    return session
-                if answer.strip().lower() == "cancel":
-                    print("Proposed update discarded. Accepted event unchanged.")
-                    break
-                context += f"\nQuestion: {issue['question']}\nAnswer: {answer}"
-                continue
-            if result["status"] == "ready":
-                session = result["session"]
-                print(build_change_summary(result))
-                display_session(session)
-            elif result["status"] == "noop":
-                print(build_change_summary(result))
-            else:
-                print("Replanning failed. The accepted revision is unchanged; you can retry the change.")
-            break
+        workflow = controller.submit_change(client, model, workflow, request)
+        workflow, exiting = resolve_clarifications(client, model, workflow)
+        if exiting:
+            return session
+        if workflow["outcome"] == "ready":
+            session = workflow["accepted"]
+            print(workflow["last_summary"])
+            display_session(session)
+        elif workflow["outcome"] == "noop":
+            print(workflow["last_summary"])
+        elif workflow["error"]:
+            print(workflow["error"]["message"])
 
 
 def main():
@@ -242,17 +205,14 @@ def main():
             message = input("\nDescribe the event you want to plan:\n> ")
             if _exit_requested(message):
                 return
-            event_state = {"event_type": None, "location": None, "date": None,
-                           "guest_count": None, "budget": None, "preferences": []}
-            event_state = extract_requirements(client, model, message, event_state)
-            collected = collect_requirements(client, model, event_state, message)
-            if collected is None:
+            workflow = controller.start_plan(client, model, message)
+            workflow, exiting = resolve_clarifications(client, model, workflow)
+            if exiting:
                 return
-            requirements, strategy, _ = collected
-            session = generate_revision(client, model, requirements, strategy)
-            if session is None:
-                print("Unable to complete the event plan and budget. No revision was accepted.")
+            if workflow["error"]:
+                print(workflow["error"]["message"])
                 return
+            session = workflow["accepted"]
             display_session(session)
             handle_changes(client, model, session)
         except (EOFError, KeyboardInterrupt):

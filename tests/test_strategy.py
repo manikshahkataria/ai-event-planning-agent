@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 from planner.budget import optimize_budget
 from planner.event_plan import generate_event_plan
-import main
+from planner import controller
 from planner.strategy import assess_event_strategy
 
 
@@ -154,18 +154,25 @@ class StrategyTests(unittest.TestCase):
         self.assertIsNone(self.assess(ready)[0])
 
     def run_gate(self, assessments, initial=None, corrections=()):
-        # Exercise the callable gate without starting the application or a client.
+        # Exercise the shared gate one action at a time, without CLI startup.
         state = deepcopy(STATE if initial is None else initial)
-        downstream = Mock()
+        downstream = Mock(return_value={"ok": True})
         scope = {}
         with patch("planner.strategy.create_reliable_completion", side_effect=assessments) as complete, \
-                patch("main.extract_requirements", side_effect=corrections) as extraction, \
-                patch("builtins.input", return_value="correction"):
-            collected = main.collect_requirements(None, None, state, "Initial description")
-        if collected is not None:
-            scope["event_state"], scope["strategy"], scope["conversation_context"] = collected
-            for stage in ("plan", "budget", "timeline"):
-                downstream(stage)
+                patch("planner.controller.extract_requirements_result", return_value={"status": "success", "requirements": state}) as extraction, \
+                patch("planner.replanning.generate_event_plan", downstream), \
+                patch("planner.replanning.optimize_budget", downstream), \
+                patch("planner.replanning.generate_timeline", downstream), \
+                patch("planner.replanning.recommend_vendors", return_value=[]):
+            workflow = controller.start_plan(None, None, "Initial description")
+            extraction.reset_mock()
+            extraction.side_effect = [{"status": "success", "requirements": value} for value in corrections]
+            while workflow["phase"] == "NEEDS_CLARIFICATION":
+                workflow = controller.submit_clarification(None, None, workflow, "correction")
+        if workflow["accepted"] is not None:
+            scope["event_state"] = workflow["accepted"]["requirements"]
+            scope["strategy"] = workflow["accepted"]["strategy"]
+            scope["conversation_context"] = json.loads(complete.call_args.kwargs["messages"][1]["content"])["conversation_context"]
         return scope, complete, extraction, downstream
 
     def test_gate_blocks_on_malformed_or_unavailable(self):

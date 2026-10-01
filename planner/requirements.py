@@ -53,9 +53,19 @@ def extract_requirements(
     user_message,
     current_state
 ):
+    """Backward-compatible state-only interface, retaining state on failure."""
+    return extract_requirements_result(client, model, user_message, current_state)["requirements"]
+
+
+def extract_requirements_result(
+    client,
+    model,
+    user_message,
+    current_state
+):
     """
-    Extract event requirements from a user message
-    while preserving the existing event state.
+    Return explicit success/failure plus requirements, using the existing merge.
+    A successful unchanged extraction is distinct from a provider/response error.
     """
 
     system_prompt = """
@@ -136,7 +146,8 @@ Update the event state using the new information.
                 "\n⚠️ Requirements extraction "
                 "could not reach the AI service."
             )
-            return current_state
+            return {"status": "error", "requirements": current_state,
+                    "error": "Requirements extraction could not reach the AI service."}
 
         raw_response = (
             response.choices[0].message.content
@@ -147,9 +158,14 @@ Update the event state using the new information.
 
         if not raw_response:
             print("\n❌ Empty AI response.")
-            return current_state
+            return {"status": "error", "requirements": current_state,
+                    "error": "Requirements extraction returned an empty response."}
 
         extracted = json.loads(raw_response)
+        if (not isinstance(extracted, dict) or set(extracted) != set(EVENT_SCHEMA["required"])
+                or not isinstance(extracted["preferences"], list)
+                or any(not isinstance(value, str) for value in extracted["preferences"])):
+            raise ValueError("Malformed requirements response.")
 
         # -----------------------------------
         # MERGE WITH CURRENT STATE
@@ -186,7 +202,7 @@ Update the event state using the new information.
                 )
             )
 
-        return updated_state
+        return {"status": "success", "requirements": updated_state, "error": None}
 
     except json.JSONDecodeError:
 
@@ -198,14 +214,15 @@ Update the event state using the new information.
             "Keeping previous event state."
         )
 
-        return current_state
+        return {"status": "error", "requirements": current_state,
+                "error": "Requirements extraction returned invalid JSON."}
 
-    except Exception as error:
+    except Exception:
 
-        print("\n❌ API/extraction error:")
-        print(error)
+        print("\nRequirements extraction is currently unavailable.")
 
-        return current_state
+        return {"status": "error", "requirements": current_state,
+                "error": "Requirements extraction is currently unavailable."}
 
 
 def get_missing_fields(event_state):
