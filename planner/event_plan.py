@@ -153,8 +153,6 @@ assumptions and trade-offs in planning_notes for downstream execution planning.
             response.choices[0].message.content
         )
 
-        print("\nRaw Event Plan Response:")
-        print(raw_response)
 
         if not raw_response:
             print(
@@ -280,6 +278,5 @@ assumptions and trade-offs in planning_notes for downstream execution planning.
             "\n❌ Error generating event plan:"
         )
 
-        print(error)
 
         return None

@@ -153,8 +153,6 @@ Update the event state using the new information.
             response.choices[0].message.content
         )
 
-        print("\nRaw AI response:")
-        print(raw_response)
 
         if not raw_response:
             print("\n❌ Empty AI response.")

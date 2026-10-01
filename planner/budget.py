@@ -226,8 +226,6 @@ Explain trade-offs without silently dropping an explicit user priority.
             response.choices[0].message.content
         )
 
-        print("\nRaw Budget Intelligence Response:")
-        print(raw_response)
 
         if not raw_response:
 
@@ -366,6 +364,5 @@ Explain trade-offs without silently dropping an explicit user priority.
             "\n❌ Error generating budget intelligence:"
         )
 
-        print(error)
 
         return None

@@ -244,8 +244,6 @@ The event date is:
             response.choices[0].message.content
         )
 
-        print("\nRaw Timeline Response:")
-        print(raw_response)
 
         if not raw_response:
 
@@ -331,6 +329,5 @@ The event date is:
             "\n❌ Error generating event timeline:"
         )
 
-        print(error)
 
         return None
